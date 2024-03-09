@@ -4,7 +4,8 @@ use proc_macro::TokenStream;
 use quote::{quote, quote_spanned};
 use special_type::{option_inner_type, vec_inner_type};
 use syn::{
-    parse_macro_input, punctuated::Punctuated, spanned::Spanned, DeriveInput, Expr, ExprLit, Field, Ident, Lit, Meta, Token
+    parse_macro_input, punctuated::Punctuated, spanned::Spanned, DeriveInput, Expr, ExprLit, Field,
+    Ident, Lit, Meta, Token,
 };
 
 fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
@@ -19,8 +20,8 @@ fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
         let nested =
             builder_attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
 
-        for meta in nested {
-            let name_literal = match &meta {
+        if let Some(meta) = nested.iter().next() {
+            let name_literal = match meta {
                 Meta::NameValue(name_value) if name_value.path.is_ident("each") => {
                     match &name_value.value {
                         Expr::Lit(ExprLit {
@@ -38,6 +39,7 @@ fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
 
             return Ok(Some(name_literal.parse()?));
         }
+        return Err(syn::Error::new_spanned(nested, ERROR_MESSAGE));
     }
 
     Ok(None)
