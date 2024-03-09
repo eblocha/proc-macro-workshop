@@ -1,7 +1,7 @@
 mod special_type;
 
 use proc_macro::TokenStream;
-use quote::{quote, quote_spanned};
+use quote::quote;
 use special_type::{option_inner_type, vec_inner_type};
 use syn::{
     parse_macro_input, punctuated::Punctuated, spanned::Spanned, DeriveInput, Expr, ExprLit, Field,
@@ -9,8 +9,6 @@ use syn::{
 };
 
 fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
-    const ERROR_MESSAGE: &str = r#"expected `builder(each = "...")`"#;
-
     let builder_attr = field
         .attrs
         .iter()
@@ -28,18 +26,24 @@ fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
                             lit: Lit::Str(s), ..
                         }) => s,
                         _ => {
-                            return Err(syn::Error::new_spanned(meta, ERROR_MESSAGE));
+                            return Err(syn::Error::new_spanned(
+                                meta,
+                                r#"expected a string literal: `"..."`"#,
+                            ));
                         }
                     }
                 }
                 _ => {
-                    return Err(syn::Error::new_spanned(meta, ERROR_MESSAGE));
+                    return Err(syn::Error::new_spanned(meta, r#"expected `each = "..."`"#));
                 }
             };
 
             return Ok(Some(name_literal.parse()?));
         }
-        return Err(syn::Error::new_spanned(nested, ERROR_MESSAGE));
+        return Err(syn::Error::new_spanned(
+            nested,
+            r#"expected `builder(each = "...")`"#,
+        ));
     }
 
     Ok(None)
@@ -56,20 +60,18 @@ pub fn derive(input: TokenStream) -> TokenStream {
     let struct_fields = match &derive_input.data {
         syn::Data::Struct(s) => &s.fields,
         _ => {
-            return quote_spanned! {
-                struct_name.span() => compile_error!("expected struct")
-            }
-            .into()
+            return syn::Error::new_spanned(struct_name, "expected struct")
+                .into_compile_error()
+                .into();
         }
     };
 
     let named_fields = match struct_fields {
         syn::Fields::Named(fields) => fields,
         _ => {
-            return quote_spanned! {
-                struct_fields.span() => compile_error!("expected struct with named fields.")
-            }
-            .into()
+            return syn::Error::new_spanned(struct_fields, "expected struct with named fields")
+                .into_compile_error()
+                .into();
         }
     };
 
@@ -122,9 +124,11 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     #name: self.#name.clone(),
                 });
             } else {
-                return quote_spanned! {
-                    ty.span() => compile_error!("expected Vec for field type with `each` attribute")
-                }
+                return syn::Error::new_spanned(
+                    ty,
+                    "expected Vec for field type with `each` attribute",
+                )
+                .into_compile_error()
                 .into();
             }
         } else if let Some(inner_type) = option_inner_type(ty) {
