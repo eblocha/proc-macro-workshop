@@ -1,43 +1,49 @@
+mod special_type;
+
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, spanned::Spanned, AngleBracketedGenericArguments, DeriveInput, GenericArgument, Ident, PathArguments, PathSegment, Type};
+use quote::{quote, quote_spanned};
+use special_type::{option_inner_type, vec_inner_type};
+use syn::{
+    parse_macro_input, punctuated::Punctuated, spanned::Spanned, DeriveInput, Expr, ExprLit, Field, Ident, Lit, Meta, Token
+};
 
-fn option_inner_type_from_type_args(args: &AngleBracketedGenericArguments) -> Option<&Type> {
-    if args.args.len() != 1 {
-        return None;
-    }
+fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
+    const ERROR_MESSAGE: &str = r#"expected `builder(each = "...")`"#;
 
-    args.args.last().and_then(|arg| {
-        match arg {
-            GenericArgument::Type(ty) => Some(ty),
-            _ => None
+    let builder_attr = field
+        .attrs
+        .iter()
+        .find(|attr| attr.path().is_ident("builder"));
+
+    if let Some(builder_attr) = builder_attr {
+        let nested =
+            builder_attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
+
+        for meta in nested {
+            let name_literal = match &meta {
+                Meta::NameValue(name_value) if name_value.path.is_ident("each") => {
+                    match &name_value.value {
+                        Expr::Lit(ExprLit {
+                            lit: Lit::Str(s), ..
+                        }) => s,
+                        _ => {
+                            return Err(syn::Error::new_spanned(meta, ERROR_MESSAGE));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(meta, ERROR_MESSAGE));
+                }
+            };
+
+            return Ok(Some(name_literal.parse()?));
         }
-    })
-}
-
-fn option_inner_type_from_ident(segment: &PathSegment) -> Option<&Type> {
-    if segment.ident == "Option" {
-        match &segment.arguments {
-            PathArguments::AngleBracketed(args) => option_inner_type_from_type_args(args),
-            _ => None
-        }
-    } else {
-        None
     }
+
+    Ok(None)
 }
 
-fn option_inner_type(ty: &Type) -> Option<&Type> {
-    match ty {
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last()
-            .and_then(option_inner_type_from_ident),
-        _ => None,
-    }
-}
-
-#[proc_macro_derive(Builder)]
+#[proc_macro_derive(Builder, attributes(builder))]
 pub fn derive(input: TokenStream) -> TokenStream {
     let derive_input = parse_macro_input!(input as DeriveInput);
 
@@ -47,12 +53,22 @@ pub fn derive(input: TokenStream) -> TokenStream {
 
     let struct_fields = match &derive_input.data {
         syn::Data::Struct(s) => &s.fields,
-        _ => panic!("Builder can only be applied to structs."),
+        _ => {
+            return quote_spanned! {
+                struct_name.span() => compile_error!("expected struct")
+            }
+            .into()
+        }
     };
 
     let named_fields = match struct_fields {
         syn::Fields::Named(fields) => fields,
-        _ => panic!("Builder can only be applied to structs with named fields."),
+        _ => {
+            return quote_spanned! {
+                struct_fields.span() => compile_error!("expected struct with named fields.")
+            }
+            .into()
+        }
     };
 
     let mut builder_methods = quote!();
@@ -65,11 +81,55 @@ pub fn derive(input: TokenStream) -> TokenStream {
         let name = field.ident.as_ref().unwrap();
         let ty = &field.ty;
 
-        builder_initial_fields.extend(quote! {
-            #name: None,
-        });
+        let each_name = match get_each_name(field) {
+            Ok(each_name) => each_name,
+            Err(err) => {
+                return err.into_compile_error().into();
+            }
+        };
 
-        if let Some(inner_type) = option_inner_type(ty) {
+        if let Some(each_name) = each_name {
+            // check if type is a vec, return compile error if not
+            if let Some(vec_inner_type) = vec_inner_type(ty) {
+                builder_initial_fields.extend(quote! {
+                    #name: std::vec::Vec::new(),
+                });
+
+                builder_fields.extend(quote! {
+                    #name: #ty,
+                });
+
+                builder_methods.extend(quote! {
+                    fn #each_name(&mut self, #each_name: #vec_inner_type) -> &mut Self {
+                        self.#name.push(#each_name);
+                        self
+                    }
+                });
+
+                if &each_name != name {
+                    // if the `each` has a different name than the field, add a method to set the entire value.
+                    builder_methods.extend(quote! {
+                        fn #name(&mut self, #name: #ty) -> &mut Self {
+                            self.#name = #name;
+                            self
+                        }
+                    })
+                }
+
+                build_steps.extend(quote! {
+                    #name: self.#name.clone(),
+                });
+            } else {
+                return quote_spanned! {
+                    ty.span() => compile_error!("expected Vec for field type with `each` attribute")
+                }
+                .into();
+            }
+        } else if let Some(inner_type) = option_inner_type(ty) {
+            builder_initial_fields.extend(quote! {
+                #name: None,
+            });
+
             builder_fields.extend(quote! {
                 #name: core::option::Option<#inner_type>,
             });
@@ -80,11 +140,15 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             });
-    
+
             build_steps.extend(quote! {
                 #name: self.#name.clone(),
             });
         } else {
+            builder_initial_fields.extend(quote! {
+                #name: None,
+            });
+
             builder_fields.extend(quote! {
                 #name: core::option::Option<#ty>,
             });
@@ -95,9 +159,9 @@ pub fn derive(input: TokenStream) -> TokenStream {
                     self
                 }
             });
-    
+
             let name_str = format!("{name} was not specified");
-    
+
             build_steps.extend(quote! {
                 #name: self.#name.clone().ok_or_else(|| #name_str.to_owned())?,
             });
