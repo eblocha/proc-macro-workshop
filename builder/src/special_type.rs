@@ -16,10 +16,7 @@ fn first_generic_type(segment: &PathSegment) -> Option<&Type> {
 
 fn last_segment(ty: &Type) -> Option<&PathSegment> {
     match ty {
-        Type::Path(type_path) => type_path
-            .path
-            .segments
-            .last(),
+        Type::Path(type_path) => type_path.path.segments.last(),
         _ => None,
     }
 }

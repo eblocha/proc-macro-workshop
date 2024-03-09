@@ -18,7 +18,7 @@ fn get_each_name(field: &Field) -> Result<Option<Ident>, syn::Error> {
         let nested =
             builder_attr.parse_args_with(Punctuated::<Meta, Token![,]>::parse_terminated)?;
 
-        if let Some(meta) = nested.iter().next() {
+        if let Some(meta) = nested.first() {
             let name_literal = match meta {
                 Meta::NameValue(name_value) if name_value.path.is_ident("each") => {
                     match &name_value.value {
